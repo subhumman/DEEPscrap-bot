@@ -1,77 +1,109 @@
 import asyncio
 import logging
-import signal
 import sys
-import traceback
+import subprocess
+import signal
+from typing import Optional
+
 from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage
+
 from config import config
 from handlers import router
-from parser import MetalParser
+from database import init_db
 
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('bot.log')
-    ]
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    stream=sys.stdout,
 )
-
 logger = logging.getLogger(__name__)
 
-# Инициализация бота и диспетчера
-try:
-    bot = Bot(token=config.BOT_TOKEN)
-    dp = Dispatcher()
-except Exception as e:
-    logger.error(f"Failed to initialize bot: {str(e)}")
-    sys.exit(1)
+# Глобальные переменные для graceful shutdown
+bot: Optional[Bot] = None
+dp: Optional[Dispatcher] = None
 
-# Регистрация роутера
-dp.include_router(router)
+def run_parser():
+    """Запускает парсер как отдельный процесс."""
+    logger.info("Starting parser...")
+    try:
+        # Запускаем парсер с явным указанием кодировки
+        process = subprocess.run(
+            [sys.executable, 'parser.py'],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='ignore'
+        )
+        logger.info("Parser finished successfully.")
+        logger.info(f"Parser output:\n{process.stdout}")
+        if process.stderr:
+            logger.error(f"Parser errors:\n{process.stderr}")
 
-# Инициализация парсера
-parser = MetalParser()
+    except FileNotFoundError:
+        logger.error("parser.py not found. Make sure the parser script is in the root directory.")
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Parser script failed with exit code {e.returncode}.")
+        logger.error(f"Parser output:\n{e.stdout}")
+        logger.error(f"Parser errors:\n{e.stderr}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"An unexpected error occurred while running the parser: {e}")
+        sys.exit(1)
 
 async def on_shutdown():
-    """
-    Корректное завершение работы бота
-    """
-    logger.info("Shutting down...")
-    try:
-        await parser.close()
-    except Exception as e:
-        logger.error(f"Error closing parser: {str(e)}")
-    
-    try:
+    """Обработчик завершения работы бота."""
+    logger.info("Shutting down bot...")
+    if bot:
         await bot.session.close()
-    except Exception as e:
-        logger.error(f"Error closing bot session: {str(e)}")
+    if dp:
+        await dp.storage.close()
 
 async def main():
-    """
-    главная функция
-    """
-    try:
-        logger.info("Starting bot...")
-        # Запуск бота
-        await dp.start_polling(bot, skip_updates=True)
-    except Exception as e:
-        logger.error(f"Error starting bot: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-    finally:
-        # Закрытие сессии бота
-        await on_shutdown()
+    """Главная функция для запуска бота."""
+    global bot, dp
+    
+    # Инициализируем базу данных
+    init_db()
 
-if __name__ == "__main__":
+    # Создаем объекты бота и диспетчера
+    bot = Bot(token=config.BOT_TOKEN, parse_mode="HTML")
+    storage = MemoryStorage()
+    dp = Dispatcher(storage=storage)
+
+    # Включаем роутер
+    dp.include_router(router)
+
+    # Регистрируем обработчик завершения
+    dp.shutdown.register(on_shutdown)
+
+    logger.info("Starting bot...")
+    await bot.delete_webhook(drop_pending_updates=True)
+    
     try:
-        logger.info("Bot initialization started")
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
+        await dp.start_polling(bot)
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-    finally:
-        logger.info("Bot stopped") 
+        logger.error(f"Error while polling: {e}")
+        await on_shutdown()
+        sys.exit(1)
+
+def handle_signal(signum, frame):
+    """Обработчик сигналов для graceful shutdown."""
+    logger.info(f"Received signal {signum}")
+    if bot and dp:
+        asyncio.create_task(on_shutdown())
+    sys.exit(0)
+
+if __name__ == '__main__':
+    # Регистрируем обработчики сигналов
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+    
+    # Сначала запускаем парсер для обновления данных
+    run_parser()
+    
+    # Затем запускаем бота
+    asyncio.run(main()) 

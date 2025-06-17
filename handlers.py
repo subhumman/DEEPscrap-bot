@@ -1,164 +1,147 @@
-from aiogram import Router, types, F
-from aiogram.filters import Command
+from aiogram import Bot, Router, types, F
+from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery
-from keyboards import get_main_keyboard, get_services_keyboard, get_contact_keyboard
-from parser import MetalParser
 import logging
 
-# Настройка логирования
+import keyboards as kb
+from database import get_all_categories, get_category_details
+from config import config
+
 logger = logging.getLogger(__name__)
 
-# Создаем роутер
 router = Router()
 
-# Инициализируем парсер
-parser = MetalParser()
+# ---------------- FSM States -----------------
+class CalculationStates(StatesGroup):
+    waiting_for_meters = State()
+    waiting_for_date = State()
 
-@router.message(Command("start"))
+# ---------------- Handlers -------------------
+
+# /start command
+@router.message(CommandStart())
 async def cmd_start(message: types.Message):
-    """
-    Обработчик команды /start
-    """
-    logger.info(f"User {message.from_user.id} started the bot")
-    await message.answer(
-        "👋 Добро пожаловать!\n\n"
-        "Я бот для получения информации об услугах и ценах.\n"
-        "Используйте команды:\n"
-        "/services - список услуг\n"
-        "/prices - текущие цены",
-        reply_markup=get_main_keyboard()
+    text = (
+        "<b>Добро пожаловать в бот по продаже металла!</b>\n\n"
+        "Мы – надежный поставщик металлопроката. "
+        "Используйте кнопки ниже, чтобы выбрать интересующий раздел."
     )
+    await message.answer(text, reply_markup=kb.get_main_menu_keyboard())
 
-@router.message(Command("services"))
-async def cmd_services(message: types.Message):
-    """
-    Обработчик команды /services
-    """
-    logger.info(f"User {message.from_user.id} requested services list")
+# Main menu callback
+@router.callback_query(F.data == "main_menu")
+async def cq_main_menu(callback: CallbackQuery):
+    text = (
+        "<b>Главное меню</b>\n\n"
+        "Выберите интересующий вас раздел."
+    )
+    await callback.message.edit_text(text, reply_markup=kb.get_main_menu_keyboard())
+    await callback.answer()
+
+# Show categories
+@router.callback_query(F.data == "show_categories")
+async def cq_show_categories(callback: CallbackQuery):
+    if not get_all_categories():
+        await callback.answer("Категории отсутствуют. Попробуйте позже.", show_alert=True)
+        return
+    text = "<b>Каталог товаров</b>\n\nВыберите категорию:"
+    await callback.message.edit_text(text, reply_markup=kb.get_categories_keyboard())
+    await callback.answer()
+
+# Category details
+@router.callback_query(F.data.startswith("category_"))
+async def cq_category_details(callback: CallbackQuery):
+    category_id = int(callback.data.split("_")[1])
+    details = get_category_details(category_id)
+    if not details:
+        await callback.answer("Категория не найдена.", show_alert=True)
+        return
+    text = (
+        f"<b>{details['name']}</b>\n\n"
+        f"Средняя цена за тонну: <b>{details['average_price']:,} руб.</b>\n\n"
+        "Вы можете рассчитать точную стоимость вашего заказа."
+    )
+    await callback.message.edit_text(text, reply_markup=kb.get_category_details_keyboard(category_id))
+    await callback.answer()
+
+# Start calculation
+@router.callback_query(F.data.startswith("calculate_"))
+async def cq_start_calculation(callback: CallbackQuery, state: FSMContext):
+    category_id = int(callback.data.split("_")[1])
+    await state.set_state(CalculationStates.waiting_for_meters)
+    await state.update_data(category_id=category_id)
+    await callback.message.edit_text("Введите необходимое количество метров:", reply_markup=kb.get_calculator_keyboard())
+    await callback.answer()
+
+# Process meters
+@router.message(CalculationStates.waiting_for_meters)
+async def process_meters(message: types.Message, state: FSMContext):
+    if not message.text.isdigit() or int(message.text) <= 0:
+        await message.answer("Пожалуйста, введите корректное целое число больше 0.")
+        return
+    await state.update_data(meters=int(message.text))
+    await state.set_state(CalculationStates.waiting_for_date)
+    await message.answer("Когда вам необходима доставка? (например, 'завтра', 'в течение недели')")
+
+# Process date and finish
+@router.message(CalculationStates.waiting_for_date)
+async def process_date(message: types.Message, state: FSMContext, bot: Bot):
+    await state.update_data(delivery_date=message.text)
+    data = await state.get_data()
+    await state.clear()
+
+    category_id = data.get("category_id")
+    meters = data.get("meters")
+    delivery_date = data.get("delivery_date")
+
+    details = get_category_details(category_id)
+    if not details:
+        await message.answer("Ошибка: не удалось найти выбранную категорию.")
+        return
+
+    # Simple weight assumption – this should be replaced with real data
+    weight_per_meter_kg = 10
+    total_weight_ton = meters * weight_per_meter_kg / 1000
+    total_cost = total_weight_ton * details["average_price"]
+
+    # Notify manager
+    manager_text = (
+        f"<b>🔔 Новая заявка</b>\n\n"
+        f"<b>Пользователь:</b> @{message.from_user.username} (ID: {message.from_user.id})\n"
+        f"<b>Товар:</b> {details['name']}\n"
+        f"<b>Количество:</b> {meters} м\n"
+        f"<b>Примерный вес:</b> {total_weight_ton:.2f} т\n"
+        f"<b>Примерная стоимость:</b> {total_cost:,.2f} руб.\n"
+        f"<b>Срок поставки:</b> {delivery_date}"
+    )
     try:
-        # Получаем список услуг
-        services = await parser.get_cached_services()
-        logger.info(f"Retrieved {len(services) if services else 0} services")
-        
-        if not services:
-            logger.warning("No services found")
-            await message.answer(
-                "❌ Не удалось получить список услуг. Попробуйте позже.",
-                reply_markup=get_main_keyboard()
-            )
-            return
-
-        # Создаем клавиатуру с услугами
-        keyboard = get_services_keyboard(services)
-        await message.answer(
-            "📋 Выберите услугу:",
-            reply_markup=keyboard
-        )
+        await bot.send_message(config.MANAGER_CHANNEL_ID, manager_text)
     except Exception as e:
-        logger.error(f"Error in cmd_services: {str(e)}", exc_info=True)
-        await message.answer(
-            f"❌ Произошла ошибка: {str(e)}",
-            reply_markup=get_main_keyboard()
-        )
+        logger.error(f"Failed to send message to manager channel: {e}")
 
-@router.callback_query(F.data.startswith('service_'))
-async def process_service_callback(callback_query: CallbackQuery):
-    """
-    Обработчик выбора услуги
-    """
-    service_name = callback_query.data.replace('service_', '')
-    logger.info(f"User {callback_query.from_user.id} selected service: {service_name}")
-    
+    # Reply to user
+    user_text = (
+        f"<b>Ваша заявка принята!</b>\n\n"
+        f"<b>Товар:</b> {details['name']}\n"
+        f"<b>Количество:</b> {meters} м\n"
+        f"<b>Примерная стоимость:</b> {total_cost:,.2f} руб.\n\n"
+        "Наш менеджер свяжется с вами в ближайшее время."
+    )
+    await message.answer(user_text, reply_markup=kb.get_main_menu_keyboard())
+
+# Contact manager
+@router.callback_query(F.data == "contact_manager")
+async def cq_contact_manager(callback: CallbackQuery, bot: Bot):
+    user = callback.from_user
+    manager_text = (
+        f"<b>📞 Запрос на связь</b>\n\n"
+        f"Пользователь @{user.username} (ID: {user.id}) просит связаться."
+    )
     try:
-        # Получаем среднюю цену
-        avg_price = await parser.get_average_price(service_name)
-        logger.info(f"Retrieved average price for {service_name}: {avg_price}")
-        
-        if avg_price:
-            await callback_query.message.edit_text(
-                f"💰 Средняя цена для услуги '{service_name}':\n"
-                f"{avg_price:.2f} руб.",
-                reply_markup=get_contact_keyboard()
-            )
-        else:
-            logger.warning(f"No price found for service: {service_name}")
-            await callback_query.message.edit_text(
-                f"❌ Не удалось получить цену для услуги '{service_name}'",
-                reply_markup=get_contact_keyboard()
-            )
+        await bot.send_message(config.MANAGER_CHANNEL_ID, manager_text)
+        await callback.answer("Ваш запрос отправлен. Менеджер скоро свяжется с вами.", show_alert=True)
     except Exception as e:
-        logger.error(f"Error in process_service_callback: {str(e)}", exc_info=True)
-        await callback_query.message.edit_text(
-            f"❌ Произошла ошибка: {str(e)}",
-            reply_markup=get_contact_keyboard()
-        )
-    finally:
-        await callback_query.answer()
-
-@router.callback_query(F.data == 'back_to_services')
-async def process_back_callback(callback_query: CallbackQuery):
-    """
-    Обработчик возврата к списку услуг
-    """
-    logger.info(f"User {callback_query.from_user.id} returned to services list")
-    try:
-        services = await parser.get_cached_services()
-        if not services:
-            logger.warning("No services found when returning to list")
-            await callback_query.message.edit_text(
-                "❌ Не удалось получить список услуг. Попробуйте позже.",
-                reply_markup=get_main_keyboard()
-            )
-            return
-
-        keyboard = get_services_keyboard(services)
-        await callback_query.message.edit_text(
-            "📋 Выберите услугу:",
-            reply_markup=keyboard
-        )
-    except Exception as e:
-        logger.error(f"Error in process_back_callback: {str(e)}", exc_info=True)
-        await callback_query.message.edit_text(
-            f"❌ Произошла ошибка: {str(e)}",
-            reply_markup=get_main_keyboard()
-        )
-    finally:
-        await callback_query.answer()
-
-@router.message(Command("prices"))
-async def cmd_prices(message: types.Message):
-    """
-    Обработчик команды /prices
-    """
-    logger.info(f"User {message.from_user.id} requested prices")
-    try:
-        # Получаем список услуг и цен
-        services = await parser.get_cached_services()
-        logger.info(f"Retrieved {len(services) if services else 0} services for prices")
-        
-        if not services:
-            logger.warning("No services found for prices")
-            await message.answer(
-                "❌ Не удалось получить цены. Попробуйте позже.",
-                reply_markup=get_main_keyboard()
-            )
-            return
-
-        # Формируем сообщение с ценами
-        prices_text = "📊 Текущие цены:\n\n"
-        for service_name in services:
-            avg_price = await parser.get_average_price(service_name)
-            if avg_price:
-                prices_text += f"{service_name}: {avg_price:.2f} руб.\n"
-                logger.info(f"Added price for {service_name}: {avg_price}")
-
-        await message.answer(
-            prices_text,
-            reply_markup=get_main_keyboard()
-        )
-    except Exception as e:
-        logger.error(f"Error in cmd_prices: {str(e)}", exc_info=True)
-        await message.answer(
-            f"❌ Произошла ошибка: {str(e)}",
-            reply_markup=get_main_keyboard()
-        ) 
+        logger.error(f"Failed to send contact request: {e}")
+        await callback.answer("Не удалось отправить запрос. Попробуйте позже.", show_alert=True) 
