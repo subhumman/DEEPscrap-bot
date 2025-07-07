@@ -1,7 +1,5 @@
 # Telegram Bot Project
 
-This is a Telegram bot project that includes a parser and database functionality.
-
 ## Project Structure
 
 ```
