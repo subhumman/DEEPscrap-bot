@@ -25,8 +25,6 @@ class CalculationStates(StatesGroup):
 async def cmd_start(message: types.Message):
     text = (
         "<b>Добро пожаловать в бот по продаже металла!</b>\n\n"
-        "Мы – надежный поставщик металлопроката. "
-        "Используйте кнопки ниже, чтобы выбрать интересующий раздел."
     )
     await message.answer(text, reply_markup=kb.get_main_menu_keyboard())
 
@@ -108,7 +106,7 @@ async def process_date(message: types.Message, state: FSMContext, bot: Bot):
 
     # Notify manager
     manager_text = (
-        f"<b>🔔 Новая заявка</b>\n\n"
+        f"<b>Новая заявка</b>\n\n"
         f"<b>Пользователь:</b> @{message.from_user.username} (ID: {message.from_user.id})\n"
         f"<b>Товар:</b> {details['name']}\n"
         f"<b>Количество:</b> {meters} м\n"
@@ -144,4 +142,5 @@ async def cq_contact_manager(callback: CallbackQuery, bot: Bot):
         await callback.answer("Ваш запрос отправлен. Менеджер скоро свяжется с вами.", show_alert=True)
     except Exception as e:
         logger.error(f"Failed to send contact request: {e}")
+
         await callback.answer("Не удалось отправить запрос. Попробуйте позже.", show_alert=True) 
