@@ -17,7 +17,7 @@ print('DEBUG: BOT_TOKEN from .env =', os.getenv('BOT_TOKEN'))
 @dataclass
 class Config:
     BOT_TOKEN: str = os.getenv('BOT_TOKEN')
-    BASE_URL: str = os.getenv('BASE_URL', "https://krasnodar.23met.ru")
+    BASE_URL: str = os.getenv('BASE_URL', "URL")
     MANAGER_CHANNEL_ID: str = os.getenv('MANAGER_CHANNEL_ID')
     
     # Proxy configuration
@@ -30,5 +30,6 @@ class Config:
             raise ValueError("BOT_TOKEN environment variable is not set")
         if not self.MANAGER_CHANNEL_ID:
             raise ValueError("MANAGER_CHANNEL_ID environment variable is not set")
+
 
 config = Config() 
