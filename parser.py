@@ -25,10 +25,6 @@ logger = logging.getLogger(__name__)
 
 
 class MetalParser:
-    """
-    Парсер для сайта krasnodar.23met.ru.
-    Собирает информацию о категориях товаров и ценах, сохраняет в JSON.
-    """
 
     def __init__(self, max_concurrent_requests: int = 5):
         self.base_url = config.BASE_URL
@@ -224,5 +220,6 @@ if __name__ == "__main__":
     if not config.PROXIES:
         logger.warning("No proxies found in config.py. Running without proxies.")
         logger.warning("The site may block your IP address.")
+
 
     asyncio.run(main()) 
