@@ -31,7 +31,7 @@
    ```
    BOT_TOKEN=your_bot_token
    MANAGER_CHANNEL_ID=your_channel_id
-   BASE_URL=https://krasnodar.23met.ru
+   BASE_URL=https://url
    PROXIES=proxy1,proxy2  # Optional
    ```
 
@@ -54,3 +54,4 @@ python bot.py
 - Never commit the `.env` file
 - Keep your bot token secure
 - Use environment variables for sensitive data 
+
